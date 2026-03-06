@@ -335,6 +335,7 @@
 
 <div class="status-bar">
   <span id="statusText">Ready</span>
+  <span id="jitterStats" style="font-variant-numeric:tabular-nums;"></span>
   <span id="portStatus">No MIDI output</span>
 </div>
 
@@ -464,14 +465,21 @@ const GM_INSTRUMENTS = [
 ];
 
 // =========================================================================
+// BLE MIDI (direct GATT with proper timestamps)
+// =========================================================================
+const { BleMidiOutput } = require('./ble-midi');
+
+// =========================================================================
 // Playback Engine
 // =========================================================================
 class PlaybackEngine {
   constructor() {
     this.midiAccess = null;
-    this.output = null;
-    this.midi = null;         // parsed MIDI
-    this.events = [];         // merged timeline [{time, trackIdx, event}]
+    this.output = null;        // Web MIDI output
+    this.bleOutput = null;     // BLE MIDI output (direct GATT)
+    this.useBle = false;       // which output mode is active
+    this.midi = null;          // parsed MIDI
+    this.events = [];          // merged timeline [{time, trackIdx, event}]
     this.duration = 0;
     this.position = 0;
     this.playing = false;
@@ -482,30 +490,57 @@ class PlaybackEngine {
     this._playbackId = 0;
     this.onTick = null;
     this.onFinish = null;
+    this._bleInstance = new BleMidiOutput();
+    this._bleDevices = [];
   }
 
   async initMidi() {
+    // Init Web MIDI
     try {
       this.midiAccess = await navigator.requestMIDIAccess({ sysex: true });
-      return true;
     } catch (e) {
       console.error("Web MIDI not available:", e);
-      return false;
     }
+    // Init BLE MIDI
+    try {
+      await this._bleInstance.init();
+      this._bleDevices = await this._bleInstance.findMidiDevices();
+      console.log("BLE MIDI devices:", this._bleDevices);
+    } catch (e) {
+      console.error("BLE MIDI not available:", e);
+    }
+    return true;
   }
 
   getOutputs() {
-    if (!this.midiAccess) return [];
     const outputs = [];
-    this.midiAccess.outputs.forEach((port) => {
-      outputs.push({ id: port.id, name: port.name });
-    });
+    // Add BLE MIDI devices first (preferred)
+    for (const dev of this._bleDevices) {
+      outputs.push({ id: `ble:${dev.path}`, name: `${dev.name} (BLE Direct)` });
+    }
+    // Add Web MIDI outputs
+    if (this.midiAccess) {
+      this.midiAccess.outputs.forEach((port) => {
+        outputs.push({ id: `web:${port.id}`, name: port.name });
+      });
+    }
     return outputs;
   }
 
-  selectOutput(id) {
-    if (!this.midiAccess) return;
-    this.output = this.midiAccess.outputs.get(id) || null;
+  async selectOutput(id) {
+    if (id.startsWith('ble:')) {
+      const path = id.slice(4);
+      await this._bleInstance.connect(path);
+      this.bleOutput = this._bleInstance;
+      this.output = null;
+      this.useBle = true;
+    } else if (id.startsWith('web:')) {
+      const webId = id.slice(4);
+      this.output = this.midiAccess?.outputs.get(webId) || null;
+      this._bleInstance.disconnect();
+      this.bleOutput = null;
+      this.useBle = false;
+    }
   }
 
   loadFile(buffer) {
@@ -574,7 +609,7 @@ class PlaybackEngine {
   }
 
   play() {
-    if (!this.output || !this.midi) return;
+    if ((!this.output && !this.bleOutput) || !this.midi) return;
     if (this.paused) {
       this.paused = false;
       this.playing = true;
@@ -613,65 +648,141 @@ class PlaybackEngine {
   }
 
   _allNotesOff() {
-    if (!this.output) return;
-    for (let ch = 0; ch < 16; ch++) {
-      this.output.send([0xb0 | ch, 123, 0]); // all notes off
-      this.output.send([0xb0 | ch, 64, 0]);  // sustain off
+    if (this.useBle && this.bleOutput) {
+      const ms = Date.now();
+      const msgs = [];
+      for (let ch = 0; ch < 16; ch++) {
+        msgs.push({ midiBytes: [0xb0 | ch, 123, 0], timestampMs: ms + ch * 2 });
+        msgs.push({ midiBytes: [0xb0 | ch, 64, 0], timestampMs: ms + ch * 2 + 1 });
+      }
+      this.bleOutput.sendBatch(msgs);
+    } else if (this.output) {
+      const now = performance.now();
+      for (let ch = 0; ch < 16; ch++) {
+        this.output.send([0xb0 | ch, 123, 0], now + ch * 2);
+        this.output.send([0xb0 | ch, 64, 0], now + ch * 2 + 1);
+      }
     }
   }
 
-  async _runPlayback(id) {
+  _runPlayback(id) {
     const events = this.events;
     let startIdx = 0;
     for (let i = 0; i < events.length; i++) {
       if (events[i].time >= this.position) { startIdx = i; break; }
     }
 
-    let prevTime = this.position;
+    this.jitter = { samples: [], maxErr: 0, sent: 0 };
 
-    for (let i = startIdx; i < events.length; i++) {
+    const startPerfTime = performance.now();
+    const startWallMs = Date.now();
+    const startMidiTime = this.position;
+    let nextIdx = startIdx;
+    let pauseOffset = 0;
+    let pauseStart = 0;
+    const LOOKAHEAD_MS = 150;
+
+    const channel = new MessageChannel();
+    const scheduleNext = () => channel.port2.postMessage(null);
+
+    const getPerfTimeForEvent = (midiTime) => {
+      return startPerfTime + pauseOffset + ((midiTime - startMidiTime) / this.tempoFactor) * 1000;
+    };
+    const getWallMsForEvent = (midiTime) => {
+      return startWallMs + pauseOffset + ((midiTime - startMidiTime) / this.tempoFactor) * 1000;
+    };
+
+    channel.port1.onmessage = () => {
       if (this._playbackId !== id) return;
 
-      const { time, trackIdx, event: evt } = events[i];
-      const delay = (time - prevTime) / this.tempoFactor;
-
-      if (delay > 0) {
-        const startWait = performance.now();
-        while ((performance.now() - startWait) < delay * 1000) {
-          if (this._playbackId !== id) return;
-          if (!this.playing && !this.paused) return;
-          if (this.paused) {
-            await new Promise(r => setTimeout(r, 50));
-            continue;
-          }
-          await new Promise(r => setTimeout(r, Math.min(10, delay * 1000 - (performance.now() - startWait))));
+      if (this.paused) {
+        if (!pauseStart) {
+          pauseStart = performance.now();
+          this._allNotesOff();
         }
+        setTimeout(scheduleNext, 50);
+        return;
+      }
+      if (pauseStart) {
+        pauseOffset += performance.now() - pauseStart;
+        pauseStart = 0;
       }
 
-      prevTime = time;
-      this.position = time;
+      const now = performance.now();
+      const elapsed = (now - startPerfTime - pauseOffset) / 1000;
+      const currentMidiTime = startMidiTime + elapsed * this.tempoFactor;
+      const lookaheadMidiTime = currentMidiTime + (LOOKAHEAD_MS / 1000) * this.tempoFactor;
 
-      if (i % 20 === 0 && this.onTick) this.onTick(this.position);
+      // Collect events to send in this batch
+      const bleBatch = [];
 
-      if (evt.meta || this.mutedTracks.has(trackIdx)) continue;
+      while (nextIdx < events.length) {
+        const { time, trackIdx, event: evt } = events[nextIdx];
+        if (time > lookaheadMidiTime) break;
 
-      if (this.output) {
-        let { status, data1, data2, type, channel } = evt;
-        if (this.forceChannel1 && channel !== 9) {
-          status = type | 0x00; // remap to channel 0 (displayed as ch 1)
+        nextIdx++;
+        if (evt.meta || this.mutedTracks.has(trackIdx)) continue;
+        if (!this.useBle && !this.output) continue;
+        if (this.useBle && !this.bleOutput) continue;
+
+        let { status, data1, data2, type } = evt;
+        if (this.forceChannel1 && evt.channel !== 9) {
+          status = type | 0x00;
         }
-        if (type === 0xc0 || type === 0xd0) {
-          this.output.send([status, data1]);
+
+        const targetPerfTime = getPerfTimeForEvent(time);
+        const headroom = targetPerfTime - now;
+        if (type === 0x90 && data2 > 0) {
+          this.jitter.samples.push(headroom);
+          if (this.jitter.samples.length > 1000) this.jitter.samples.shift();
+          if (headroom < 0) this.jitter.maxErr = Math.max(this.jitter.maxErr, -headroom);
+          this.jitter.sent++;
+        }
+
+        const midiBytes = (type === 0xc0 || type === 0xd0) ? [status, data1] : [status, data1, data2];
+
+        if (this.useBle) {
+          // BLE: use wall-clock ms timestamp for BLE MIDI protocol
+          const wallMs = getWallMsForEvent(time);
+          bleBatch.push({ midiBytes, timestampMs: wallMs });
         } else {
-          this.output.send([status, data1, data2]);
+          // Web MIDI: use performance.now() timestamp
+          this.output.send(midiBytes, targetPerfTime);
         }
       }
-    }
 
-    this.playing = false;
-    this.position = 0;
-    if (this.onTick) this.onTick(0);
-    if (this.onFinish) this.onFinish();
+      // Send BLE batch
+      if (this.useBle && bleBatch.length > 0) {
+        this.bleOutput.sendBatch(bleBatch);
+      }
+
+      this.position = currentMidiTime;
+      if (this.onTick) this.onTick(this.position);
+
+      if (nextIdx >= events.length) {
+        const lastPerfTime = getPerfTimeForEvent(events[events.length - 1].time);
+        const waitMs = lastPerfTime - performance.now() + 100;
+        setTimeout(() => {
+          if (this._playbackId !== id) return;
+          this.playing = false;
+          this.position = 0;
+          if (this.onTick) this.onTick(0);
+          if (this.onFinish) this.onFinish();
+        }, Math.max(0, waitMs));
+        return;
+      }
+
+      const nextEventPerf = getPerfTimeForEvent(events[nextIdx].time);
+      const timeUntilNeeded = nextEventPerf - LOOKAHEAD_MS - performance.now();
+
+      if (timeUntilNeeded <= 5) {
+        scheduleNext();
+      } else {
+        setTimeout(scheduleNext, Math.min(timeUntilNeeded * 0.5, 50));
+      }
+    };
+
+    scheduleNext();
   }
 }
 
@@ -734,15 +845,17 @@ function refreshPortList() {
     opt.value = o.id;
     opt.textContent = o.name;
     portSelect.appendChild(opt);
-    if (o.name.includes("MD-BT01") || o.name.includes("Bluetooth")) preferredIdx = i;
+    // Prefer BLE Direct, then MD-BT01/Bluetooth
+    if (o.id.startsWith("ble:")) preferredIdx = i;
+    else if (preferredIdx === 0 && (o.name.includes("MD-BT01") || o.name.includes("Bluetooth"))) preferredIdx = i;
   });
   portSelect.selectedIndex = preferredIdx;
   selectPort();
 }
 
-function selectPort() {
+async function selectPort() {
   const id = portSelect.value;
-  engine.selectOutput(id);
+  await engine.selectOutput(id);
   const name = portSelect.options[portSelect.selectedIndex]?.textContent || "None";
   portStatus.textContent = `Output: ${name}`;
 }
@@ -873,6 +986,7 @@ engine.onFinish = () => {
 };
 
 // Update UI periodically
+const jitterStats = $("jitterStats");
 setInterval(() => {
   if (engine.playing) {
     currentTime.textContent = formatTime(engine.position);
@@ -880,8 +994,23 @@ setInterval(() => {
       progressFill.style.width = `${(engine.position / engine.duration) * 100}%`;
     }
     statusText.textContent = "Playing...";
+    // Jitter stats — headroom: how far ahead events are scheduled (positive = good)
+    if (engine.jitter && engine.jitter.samples.length > 0) {
+      const s = engine.jitter.samples;
+      const avg = s.reduce((a, b) => a + b, 0) / s.length;
+      const min = Math.min(...s);
+      const late = s.filter(v => v < 0).length;
+      jitterStats.textContent = `Headroom: avg ${avg.toFixed(0)}ms / min ${min.toFixed(0)}ms / late: ${late}/${engine.jitter.sent}`;
+    }
   } else if (engine.paused) {
     statusText.textContent = "Paused";
+  } else {
+    if (engine.jitter && engine.jitter.sent > 0) {
+      const s = engine.jitter.samples;
+      const avg = s.length ? (s.reduce((a, b) => a + b, 0) / s.length) : 0;
+      const late = s.filter(v => v < 0).length;
+      jitterStats.textContent = `Last: avg headroom ${avg.toFixed(0)}ms / late: ${late}/${engine.jitter.sent}`;
+    }
   }
 }, 100);
 
