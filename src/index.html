@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MIDI Player</title>
+<style>
+  :root {
+    --bg: #1a1a2e;
+    --surface: #16213e;
+    --surface2: #0f3460;
+    --accent: #e94560;
+    --accent-hover: #ff6b81;
+    --text: #eee;
+    --text-dim: #8892a4;
+    --border: #2a3a5c;
+    --success: #2ed573;
+    --radius: 10px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    user-select: none;
+  }
+
+  /* Header */
+  .header {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 20px 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+  }
+  .header h1 {
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.5px;
+  }
+  .header .file-name {
+    color: var(--text-dim);
+    font-size: 15px;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* Controls bar */
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 18px 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-wrap: wrap;
+  }
+
+  /* Buttons */
+  button {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 22px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  button:hover { background: var(--accent); border-color: var(--accent); }
+  button:active { transform: scale(0.97); }
+  button.primary { background: var(--accent); border-color: var(--accent); }
+  button.primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  button:disabled { opacity: 0.4; cursor: default; transform: none; }
+  button:disabled:hover { background: var(--surface2); border-color: var(--border); }
+
+  .transport-btns { display: flex; gap: 6px; }
+  .transport-btns button { padding: 12px 28px; font-size: 16px; min-width: 90px; justify-content: center; }
+
+  /* MIDI output select */
+  .port-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-left: auto;
+  }
+  .port-section label { font-size: 14px; color: var(--text-dim); white-space: nowrap; }
+  select {
+    background: var(--surface2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 14px;
+    font-size: 14px;
+    min-width: 220px;
+    cursor: pointer;
+    appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238892a4' stroke-width='2' fill='none'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 12px center;
+    padding-right: 36px;
+  }
+  select:focus { outline: 2px solid var(--accent); }
+
+  /* Progress */
+  .progress-section {
+    padding: 16px 28px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+  .time { font-size: 15px; font-variant-numeric: tabular-nums; color: var(--text-dim); min-width: 50px; }
+  .time.right { text-align: right; }
+  .progress-bar-container {
+    flex: 1;
+    height: 10px;
+    background: var(--surface2);
+    border-radius: 5px;
+    cursor: pointer;
+    position: relative;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 5px;
+    width: 0%;
+    transition: width 0.1s linear;
+    pointer-events: none;
+  }
+  .progress-bar-container:hover .progress-bar-fill { background: var(--accent-hover); }
+
+  /* Tempo */
+  .tempo-section {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tempo-section label { font-size: 14px; color: var(--text-dim); }
+  .tempo-section .tempo-val { font-size: 14px; min-width: 48px; text-align: center; font-weight: 600; }
+  input[type="range"] {
+    -webkit-appearance: none;
+    appearance: none;
+    background: var(--surface2);
+    height: 6px;
+    border-radius: 3px;
+    outline: none;
+    width: 140px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 2px solid var(--bg);
+  }
+  input[type="range"]::-webkit-slider-thumb:hover { background: var(--accent-hover); }
+
+  /* Track list */
+  .tracks-section {
+    flex: 1;
+    overflow-y: auto;
+    padding: 20px 28px;
+  }
+  .tracks-section h2 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .track-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 16px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 8px;
+    transition: border-color 0.15s;
+  }
+  .track-row:hover { border-color: var(--accent); }
+  .track-row.muted { opacity: 0.4; }
+  .track-row .track-name { font-weight: 600; font-size: 15px; min-width: 160px; }
+  .track-row .track-info { font-size: 13px; color: var(--text-dim); }
+
+  /* Toggle switch */
+  .toggle {
+    position: relative;
+    width: 44px;
+    height: 24px;
+    flex-shrink: 0;
+  }
+  .toggle input { opacity: 0; width: 0; height: 0; }
+  .toggle .slider {
+    position: absolute;
+    inset: 0;
+    background: var(--surface2);
+    border-radius: 12px;
+    cursor: pointer;
+    transition: 0.2s;
+    border: 1px solid var(--border);
+  }
+  .toggle .slider::before {
+    content: "";
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    left: 2px;
+    bottom: 2px;
+    background: var(--text-dim);
+    border-radius: 50%;
+    transition: 0.2s;
+  }
+  .toggle input:checked + .slider { background: var(--accent); border-color: var(--accent); }
+  .toggle input:checked + .slider::before { transform: translateX(20px); background: white; }
+
+  /* Status bar */
+  .status-bar {
+    padding: 10px 28px;
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    font-size: 13px;
+    color: var(--text-dim);
+    display: flex;
+    justify-content: space-between;
+  }
+
+  /* Drop zone overlay */
+  .drop-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(233, 69, 96, 0.15);
+    border: 3px dashed var(--accent);
+    z-index: 100;
+    align-items: center;
+    justify-content: center;
+    font-size: 24px;
+    font-weight: 700;
+    color: var(--accent);
+  }
+  .drop-overlay.active { display: flex; }
+
+  /* Empty state */
+  .empty-state {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    gap: 12px;
+  }
+  .empty-state .icon { font-size: 48px; opacity: 0.3; }
+  .empty-state p { font-size: 16px; }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 8px; }
+  ::-webkit-scrollbar-track { background: var(--bg); }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text-dim); }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <h1>MIDI Player</h1>
+  <span class="file-name" id="fileName">No file loaded &mdash; click Open or drag &amp; drop a .mid file</span>
+</div>
+
+<div class="controls">
+  <button id="openBtn">Open File</button>
+
+  <div class="transport-btns">
+    <button id="playBtn" class="primary" disabled>Play</button>
+    <button id="pauseBtn" disabled>Pause</button>
+    <button id="stopBtn" disabled>Stop</button>
+  </div>
+
+  <div class="tempo-section">
+    <label>Tempo</label>
+    <input type="range" id="tempoSlider" min="25" max="200" value="100">
+    <span class="tempo-val" id="tempoVal">1.00x</span>
+    <button id="tempoReset" style="padding:8px 14px;font-size:13px;">Reset</button>
+  </div>
+
+  <label class="toggle" title="Remap all notes to channel 1 (for Disklavier/piano)">
+    <input type="checkbox" id="forceChToggle" checked>
+    <span class="slider"></span>
+  </label>
+  <label for="forceChToggle" style="font-size:14px;color:var(--text-dim);cursor:pointer;">Force Ch 1</label>
+
+  <div class="port-section">
+    <label>MIDI Output</label>
+    <select id="portSelect"><option value="">Scanning...</option></select>
+    <button id="refreshPorts" style="padding:8px 14px;font-size:13px;">Refresh</button>
+  </div>
+</div>
+
+<div class="progress-section">
+  <span class="time" id="currentTime">0:00</span>
+  <div class="progress-bar-container" id="progressBar">
+    <div class="progress-bar-fill" id="progressFill"></div>
+  </div>
+  <span class="time right" id="totalTime">0:00</span>
+</div>
+
+<div class="tracks-section" id="tracksSection">
+  <div class="empty-state" id="emptyState">
+    <div class="icon">&#9835;</div>
+    <p>Open a MIDI file to get started</p>
+    <p style="font-size:13px;">Supports .mid / .midi files</p>
+  </div>
+</div>
+
+<div class="status-bar">
+  <span id="statusText">Ready</span>
+  <span id="portStatus">No MIDI output</span>
+</div>
+
+<div class="drop-overlay" id="dropOverlay">Drop MIDI file here</div>
+
+<input type="file" id="fileInput" accept=".mid,.midi" style="display:none">
+
+<script>
+// =========================================================================
+// MIDI File Parser
+// =========================================================================
+class MidiParser {
+  static parse(buffer) {
+    const data = new DataView(buffer);
+    let offset = 0;
+
+    function readStr(len) {
+      let s = "";
+      for (let i = 0; i < len; i++) s += String.fromCharCode(data.getUint8(offset++));
+      return s;
+    }
+    function read8() { return data.getUint8(offset++); }
+    function read16() { const v = data.getUint16(offset); offset += 2; return v; }
+    function read32() { const v = data.getUint32(offset); offset += 4; return v; }
+    function readVarLen() {
+      let val = 0;
+      for (let i = 0; i < 4; i++) {
+        const b = read8();
+        val = (val << 7) | (b & 0x7f);
+        if (!(b & 0x80)) break;
+      }
+      return val;
+    }
+
+    // Header
+    const headerTag = readStr(4);
+    if (headerTag !== "MThd") throw new Error("Not a MIDI file");
+    read32(); // header length
+    const format = read16();
+    const numTracks = read16();
+    const ticksPerBeat = read16();
+
+    // Tracks
+    const tracks = [];
+    for (let t = 0; t < numTracks; t++) {
+      const trackTag = readStr(4);
+      if (trackTag !== "MTrk") throw new Error("Expected MTrk");
+      const trackLen = read32();
+      const trackEnd = offset + trackLen;
+      const events = [];
+      let runningStatus = 0;
+
+      while (offset < trackEnd) {
+        const delta = readVarLen();
+        let statusByte = data.getUint8(offset);
+
+        if (statusByte === 0xff) {
+          // Meta event
+          offset++;
+          const type = read8();
+          const len = readVarLen();
+          const metaData = new Uint8Array(buffer, offset, len);
+          offset += len;
+
+          const evt = { delta, meta: true, type, data: metaData };
+          if (type === 0x03) evt.trackName = new TextDecoder().decode(metaData);
+          if (type === 0x51 && len === 3) evt.tempo = (metaData[0] << 16) | (metaData[1] << 8) | metaData[2];
+          events.push(evt);
+        } else if (statusByte === 0xf0 || statusByte === 0xf7) {
+          // SysEx
+          offset++;
+          const len = readVarLen();
+          offset += len;
+          events.push({ delta, meta: true, type: 0xf0 });
+        } else {
+          // MIDI event
+          if (statusByte & 0x80) {
+            runningStatus = statusByte;
+            offset++;
+          } else {
+            statusByte = runningStatus;
+          }
+
+          const type = statusByte & 0xf0;
+          const channel = statusByte & 0x0f;
+          let d1 = read8();
+          let d2 = 0;
+          if (type !== 0xc0 && type !== 0xd0) d2 = read8();
+
+          events.push({ delta, meta: false, status: statusByte, type, channel, data1: d1, data2: d2 });
+        }
+      }
+      offset = trackEnd;
+      tracks.push(events);
+    }
+
+    return { format, numTracks, ticksPerBeat, tracks };
+  }
+}
+
+// =========================================================================
+// GM Instrument Names
+// =========================================================================
+const GM_INSTRUMENTS = [
+  "Acoustic Grand Piano","Bright Acoustic Piano","Electric Grand Piano","Honky-tonk Piano",
+  "Electric Piano 1","Electric Piano 2","Harpsichord","Clavi","Celesta","Glockenspiel",
+  "Music Box","Vibraphone","Marimba","Xylophone","Tubular Bells","Dulcimer","Drawbar Organ",
+  "Percussive Organ","Rock Organ","Church Organ","Reed Organ","Accordion","Harmonica",
+  "Tango Accordion","Acoustic Guitar (nylon)","Acoustic Guitar (steel)","Electric Guitar (jazz)",
+  "Electric Guitar (clean)","Electric Guitar (muted)","Overdriven Guitar","Distortion Guitar",
+  "Guitar Harmonics","Acoustic Bass","Electric Bass (finger)","Electric Bass (pick)",
+  "Fretless Bass","Slap Bass 1","Slap Bass 2","Synth Bass 1","Synth Bass 2","Violin","Viola",
+  "Cello","Contrabass","Tremolo Strings","Pizzicato Strings","Orchestral Harp","Timpani",
+  "String Ensemble 1","String Ensemble 2","Synth Strings 1","Synth Strings 2","Choir Aahs",
+  "Voice Oohs","Synth Voice","Orchestra Hit","Trumpet","Trombone","Tuba","Muted Trumpet",
+  "French Horn","Brass Section","Synth Brass 1","Synth Brass 2","Soprano Sax","Alto Sax",
+  "Tenor Sax","Baritone Sax","Oboe","English Horn","Bassoon","Clarinet","Piccolo","Flute",
+  "Recorder","Pan Flute","Blown Bottle","Shakuhachi","Whistle","Ocarina","Lead 1 (square)",
+  "Lead 2 (sawtooth)","Lead 3 (calliope)","Lead 4 (chiff)","Lead 5 (charang)","Lead 6 (voice)",
+  "Lead 7 (fifths)","Lead 8 (bass + lead)","Pad 1 (new age)","Pad 2 (warm)","Pad 3 (polysynth)",
+  "Pad 4 (choir)","Pad 5 (bowed)","Pad 6 (metallic)","Pad 7 (halo)","Pad 8 (sweep)",
+  "FX 1 (rain)","FX 2 (soundtrack)","FX 3 (crystal)","FX 4 (atmosphere)","FX 5 (brightness)",
+  "FX 6 (goblins)","FX 7 (echoes)","FX 8 (sci-fi)","Sitar","Banjo","Shamisen","Koto","Kalimba",
+  "Bag pipe","Fiddle","Shanai","Tinkle Bell","Agogo","Steel Drums","Woodblock","Taiko Drum",
+  "Melodic Tom","Synth Drum","Reverse Cymbal","Guitar Fret Noise","Breath Noise","Seashore",
+  "Bird Tweet","Telephone Ring","Helicopter","Applause","Gunshot"
+];
+
+// =========================================================================
+// Playback Engine
+// =========================================================================
+class PlaybackEngine {
+  constructor() {
+    this.midiAccess = null;
+    this.output = null;
+    this.midi = null;         // parsed MIDI
+    this.events = [];         // merged timeline [{time, trackIdx, event}]
+    this.duration = 0;
+    this.position = 0;
+    this.playing = false;
+    this.paused = false;
+    this.tempoFactor = 1.0;
+    this.mutedTracks = new Set();
+    this.forceChannel1 = true;
+    this._playbackId = 0;
+    this.onTick = null;
+    this.onFinish = null;
+  }
+
+  async initMidi() {
+    try {
+      this.midiAccess = await navigator.requestMIDIAccess({ sysex: true });
+      return true;
+    } catch (e) {
+      console.error("Web MIDI not available:", e);
+      return false;
+    }
+  }
+
+  getOutputs() {
+    if (!this.midiAccess) return [];
+    const outputs = [];
+    this.midiAccess.outputs.forEach((port) => {
+      outputs.push({ id: port.id, name: port.name });
+    });
+    return outputs;
+  }
+
+  selectOutput(id) {
+    if (!this.midiAccess) return;
+    this.output = this.midiAccess.outputs.get(id) || null;
+  }
+
+  loadFile(buffer) {
+    this.stop();
+    this.midi = MidiParser.parse(buffer);
+    this._buildTimeline();
+  }
+
+  _buildTimeline() {
+    const mid = this.midi;
+    const events = [];
+
+    for (let t = 0; t < mid.tracks.length; t++) {
+      let absTick = 0;
+      for (const evt of mid.tracks[t]) {
+        absTick += evt.delta;
+        events.push({ absTick, trackIdx: t, event: evt });
+      }
+    }
+    events.sort((a, b) => a.absTick - b.absTick || a.trackIdx - b.trackIdx);
+
+    // Convert to seconds
+    let tempo = 500000;
+    let currentTick = 0;
+    let currentTime = 0;
+    const tpb = mid.ticksPerBeat;
+
+    for (const e of events) {
+      const deltaTicks = e.absTick - currentTick;
+      currentTime += (deltaTicks / tpb) * (tempo / 1000000);
+      currentTick = e.absTick;
+      e.time = currentTime;
+      if (e.event.meta && e.event.tempo) tempo = e.event.tempo;
+    }
+
+    this.events = events;
+    this.duration = currentTime;
+    this.position = 0;
+  }
+
+  getTrackInfo() {
+    if (!this.midi) return [];
+    return this.midi.tracks.map((track, i) => {
+      let name = "";
+      const channels = new Set();
+      const instruments = new Set();
+      let noteCount = 0;
+
+      for (const evt of track) {
+        if (evt.trackName) name = evt.trackName;
+        if (!evt.meta) {
+          channels.add(evt.channel);
+          if (evt.type === 0xc0 && evt.data1 < 128) instruments.add(GM_INSTRUMENTS[evt.data1]);
+          if (evt.type === 0x90 && evt.data2 > 0) noteCount++;
+        }
+      }
+
+      return {
+        index: i,
+        name: name || `Track ${i + 1}`,
+        channels: [...channels].map(c => c + 1).sort((a, b) => a - b),
+        instruments: [...instruments],
+        noteCount,
+      };
+    });
+  }
+
+  play() {
+    if (!this.output || !this.midi) return;
+    if (this.paused) {
+      this.paused = false;
+      this.playing = true;
+      return;
+    }
+    this.stop();
+    this.playing = true;
+    this.paused = false;
+    this._playbackId++;
+    this._runPlayback(this._playbackId);
+  }
+
+  pause() {
+    if (this.playing) {
+      this.playing = false;
+      this.paused = true;
+      this._allNotesOff();
+    }
+  }
+
+  stop() {
+    this.playing = false;
+    this.paused = false;
+    this._playbackId++;
+    this.position = 0;
+    this._allNotesOff();
+    if (this.onTick) this.onTick(0);
+  }
+
+  seek(targetSeconds) {
+    const wasPlaying = this.playing || this.paused;
+    this.stop();
+    this.position = Math.max(0, Math.min(targetSeconds, this.duration));
+    if (this.onTick) this.onTick(this.position);
+    if (wasPlaying) this.play();
+  }
+
+  _allNotesOff() {
+    if (!this.output) return;
+    for (let ch = 0; ch < 16; ch++) {
+      this.output.send([0xb0 | ch, 123, 0]); // all notes off
+      this.output.send([0xb0 | ch, 64, 0]);  // sustain off
+    }
+  }
+
+  async _runPlayback(id) {
+    const events = this.events;
+    let startIdx = 0;
+    for (let i = 0; i < events.length; i++) {
+      if (events[i].time >= this.position) { startIdx = i; break; }
+    }
+
+    let prevTime = this.position;
+
+    for (let i = startIdx; i < events.length; i++) {
+      if (this._playbackId !== id) return;
+
+      const { time, trackIdx, event: evt } = events[i];
+      const delay = (time - prevTime) / this.tempoFactor;
+
+      if (delay > 0) {
+        const startWait = performance.now();
+        while ((performance.now() - startWait) < delay * 1000) {
+          if (this._playbackId !== id) return;
+          if (!this.playing && !this.paused) return;
+          if (this.paused) {
+            await new Promise(r => setTimeout(r, 50));
+            continue;
+          }
+          await new Promise(r => setTimeout(r, Math.min(10, delay * 1000 - (performance.now() - startWait))));
+        }
+      }
+
+      prevTime = time;
+      this.position = time;
+
+      if (i % 20 === 0 && this.onTick) this.onTick(this.position);
+
+      if (evt.meta || this.mutedTracks.has(trackIdx)) continue;
+
+      if (this.output) {
+        let { status, data1, data2, type, channel } = evt;
+        if (this.forceChannel1 && channel !== 9) {
+          status = type | 0x00; // remap to channel 0 (displayed as ch 1)
+        }
+        if (type === 0xc0 || type === 0xd0) {
+          this.output.send([status, data1]);
+        } else {
+          this.output.send([status, data1, data2]);
+        }
+      }
+    }
+
+    this.playing = false;
+    this.position = 0;
+    if (this.onTick) this.onTick(0);
+    if (this.onFinish) this.onFinish();
+  }
+}
+
+// =========================================================================
+// App
+// =========================================================================
+const engine = new PlaybackEngine();
+
+// DOM
+const $ = (s) => document.getElementById(s);
+const openBtn = $("openBtn");
+const playBtn = $("playBtn");
+const pauseBtn = $("pauseBtn");
+const stopBtn = $("stopBtn");
+const fileInput = $("fileInput");
+const fileName = $("fileName");
+const portSelect = $("portSelect");
+const refreshPorts = $("refreshPorts");
+const currentTime = $("currentTime");
+const totalTime = $("totalTime");
+const progressBar = $("progressBar");
+const progressFill = $("progressFill");
+const tempoSlider = $("tempoSlider");
+const tempoVal = $("tempoVal");
+const tempoReset = $("tempoReset");
+const tracksSection = $("tracksSection");
+const emptyState = $("emptyState");
+const statusText = $("statusText");
+const portStatus = $("portStatus");
+const dropOverlay = $("dropOverlay");
+
+function formatTime(s) {
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${sec.toString().padStart(2, "0")}`;
+}
+
+// MIDI init
+async function init() {
+  const ok = await engine.initMidi();
+  if (ok) {
+    statusText.textContent = "MIDI ready";
+    refreshPortList();
+  } else {
+    statusText.textContent = "Web MIDI not available";
+  }
+}
+
+function refreshPortList() {
+  const outputs = engine.getOutputs();
+  portSelect.innerHTML = "";
+  if (outputs.length === 0) {
+    portSelect.innerHTML = '<option value="">No MIDI outputs found</option>';
+    portStatus.textContent = "No MIDI output";
+    return;
+  }
+  let preferredIdx = 0;
+  outputs.forEach((o, i) => {
+    const opt = document.createElement("option");
+    opt.value = o.id;
+    opt.textContent = o.name;
+    portSelect.appendChild(opt);
+    if (o.name.includes("MD-BT01") || o.name.includes("Bluetooth")) preferredIdx = i;
+  });
+  portSelect.selectedIndex = preferredIdx;
+  selectPort();
+}
+
+function selectPort() {
+  const id = portSelect.value;
+  engine.selectOutput(id);
+  const name = portSelect.options[portSelect.selectedIndex]?.textContent || "None";
+  portStatus.textContent = `Output: ${name}`;
+}
+
+const forceChToggle = $("forceChToggle");
+forceChToggle.addEventListener("change", () => { engine.forceChannel1 = forceChToggle.checked; });
+
+portSelect.addEventListener("change", selectPort);
+refreshPorts.addEventListener("click", refreshPortList);
+
+// File loading
+openBtn.addEventListener("click", () => fileInput.click());
+fileInput.addEventListener("change", (e) => {
+  if (e.target.files.length) loadMidiFile(e.target.files[0]);
+});
+
+// Drag and drop
+document.addEventListener("dragover", (e) => { e.preventDefault(); dropOverlay.classList.add("active"); });
+document.addEventListener("dragleave", (e) => {
+  if (e.relatedTarget === null) dropOverlay.classList.remove("active");
+});
+document.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dropOverlay.classList.remove("active");
+  const file = e.dataTransfer.files[0];
+  if (file && (file.name.endsWith(".mid") || file.name.endsWith(".midi"))) loadMidiFile(file);
+});
+
+async function loadMidiFile(file) {
+  try {
+    const buffer = await file.arrayBuffer();
+    engine.loadFile(buffer);
+    fileName.textContent = file.name;
+    totalTime.textContent = formatTime(engine.duration);
+    currentTime.textContent = "0:00";
+    progressFill.style.width = "0%";
+    playBtn.disabled = false;
+    pauseBtn.disabled = false;
+    stopBtn.disabled = false;
+    renderTracks();
+    statusText.textContent = `Loaded: ${file.name}`;
+  } catch (err) {
+    statusText.textContent = `Error: ${err.message}`;
+    console.error(err);
+  }
+}
+
+function renderTracks() {
+  const info = engine.getTrackInfo();
+  const hasNotes = info.some(t => t.noteCount > 0);
+
+  tracksSection.innerHTML = "";
+  if (!hasNotes) {
+    tracksSection.innerHTML = '<div class="empty-state"><p>No playable tracks found</p></div>';
+    return;
+  }
+
+  const heading = document.createElement("h2");
+  heading.textContent = "Tracks";
+  tracksSection.appendChild(heading);
+
+  info.forEach((track) => {
+    if (track.noteCount === 0 && track.instruments.length === 0) return;
+
+    const row = document.createElement("div");
+    row.className = "track-row";
+    row.innerHTML = `
+      <label class="toggle">
+        <input type="checkbox" checked data-track="${track.index}">
+        <span class="slider"></span>
+      </label>
+      <span class="track-name">${escHtml(track.name)}</span>
+      <span class="track-info">
+        ${track.channels.length ? `Ch ${track.channels.join(",")}` : ""}
+        ${track.instruments.length ? ` &middot; ${escHtml(track.instruments.join(", "))}` : ""}
+        ${track.noteCount ? ` &middot; ${track.noteCount} notes` : ""}
+      </span>
+    `;
+    row.querySelector("input").addEventListener("change", (e) => {
+      const idx = parseInt(e.target.dataset.track);
+      const muted = !e.target.checked;
+      engine.mutedTracks[muted ? "add" : "delete"](idx);
+      row.classList.toggle("muted", muted);
+    });
+    tracksSection.appendChild(row);
+  });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// Transport
+playBtn.addEventListener("click", () => engine.play());
+pauseBtn.addEventListener("click", () => engine.pause());
+stopBtn.addEventListener("click", () => engine.stop());
+
+// Tempo
+tempoSlider.addEventListener("input", () => {
+  const factor = tempoSlider.value / 100;
+  engine.tempoFactor = factor;
+  tempoVal.textContent = `${factor.toFixed(2)}x`;
+});
+tempoReset.addEventListener("click", () => {
+  tempoSlider.value = 100;
+  engine.tempoFactor = 1.0;
+  tempoVal.textContent = "1.00x";
+});
+
+// Progress bar seek
+progressBar.addEventListener("click", (e) => {
+  if (!engine.midi) return;
+  const rect = progressBar.getBoundingClientRect();
+  const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+  engine.seek(ratio * engine.duration);
+});
+
+// Tick callback
+engine.onTick = (pos) => {
+  currentTime.textContent = formatTime(pos);
+  if (engine.duration > 0) {
+    progressFill.style.width = `${(pos / engine.duration) * 100}%`;
+  }
+};
+
+engine.onFinish = () => {
+  statusText.textContent = "Playback finished";
+};
+
+// Update UI periodically
+setInterval(() => {
+  if (engine.playing) {
+    currentTime.textContent = formatTime(engine.position);
+    if (engine.duration > 0) {
+      progressFill.style.width = `${(engine.position / engine.duration) * 100}%`;
+    }
+    statusText.textContent = "Playing...";
+  } else if (engine.paused) {
+    statusText.textContent = "Paused";
+  }
+}, 100);
+
+// Keyboard shortcuts
+document.addEventListener("keydown", (e) => {
+  if (e.code === "Space") { e.preventDefault(); engine.playing ? engine.pause() : engine.play(); }
+  if (e.code === "Escape") engine.stop();
+});
+
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+{
+  "name": "midi-player",
+  "version": "1.0.0",
+  "description": "MIDI Player for Yamaha Disklavier via MD-BT01",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^28.3.3"
+  }
+}
